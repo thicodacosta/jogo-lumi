@@ -223,10 +223,12 @@ class AudioManager {
       this.ctx = new (window.AudioContext || window.webkitAudioContext)();
       this._buildNoiseBuffer();
       this.ready = true;
-    } catch (e) { this.ready = false; }
+    } catch (e) { this.ready = false; this.lastError = (e && e.message) ? e.message : String(e); }
   }
   resume() {
-    if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume();
+    if (this.ctx && this.ctx.state === 'suspended') {
+      this.ctx.resume().catch((e) => { this.lastError = 'resume: ' + ((e && e.message) || String(e)); });
+    }
   }
   _buildNoiseBuffer() {
     const len = this.ctx.sampleRate * 0.3;
@@ -242,16 +244,18 @@ class AudioManager {
   }
   flap() {
     if (!this.ready) return;
-    const t0 = this.ctx.currentTime;
-    const osc = this.ctx.createOscillator();
-    const g = this._envGain(0.0001, t0);
-    osc.type = 'sine';
-    osc.frequency.setValueAtTime(300, t0);
-    osc.frequency.exponentialRampToValueAtTime(140, t0 + 0.12);
-    g.gain.exponentialRampToValueAtTime(0.18, t0 + 0.01);
-    g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.15);
-    osc.connect(g).connect(this.ctx.destination);
-    osc.start(t0); osc.stop(t0 + 0.16);
+    try {
+      const t0 = this.ctx.currentTime;
+      const osc = this.ctx.createOscillator();
+      const g = this._envGain(0.0001, t0);
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(300, t0);
+      osc.frequency.exponentialRampToValueAtTime(140, t0 + 0.12);
+      g.gain.exponentialRampToValueAtTime(0.18, t0 + 0.01);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.15);
+      osc.connect(g).connect(this.ctx.destination);
+      osc.start(t0); osc.stop(t0 + 0.16);
+    } catch (e) { this.lastError = 'flap: ' + ((e && e.message) || String(e)); }
   }
   score() {
     if (!this.ready) return;
@@ -388,17 +392,35 @@ class AudioManager {
   }
   _scheduleMusicLoop() {
     if (!this.ready || !this.musicStarted) return;
-    const cfg = this._musicLevels()[this.musicLevel || 0];
-    const t0 = this.ctx.currentTime;
-    const steps = cfg.melody.length;
-    for (let i = 0; i < steps; i++) {
-      const st = t0 + i * cfg.stepDur;
-      if (cfg.melody[i]) this._blip(st, cfg.melody[i], cfg.leadGain, cfg.stepDur * 0.82);
-      if (cfg.bass[i]) this._blip(st, cfg.bass[i], cfg.bassGain, cfg.stepDur * 1.5);
-      if (cfg.hihat && cfg.hihat[i]) this._tick(st, cfg.hihatGain);
+    try {
+      const cfg = this._musicLevels()[this.musicLevel || 0];
+      const t0 = this.ctx.currentTime;
+      const steps = cfg.melody.length;
+      for (let i = 0; i < steps; i++) {
+        const st = t0 + i * cfg.stepDur;
+        if (cfg.melody[i]) this._blip(st, cfg.melody[i], cfg.leadGain, cfg.stepDur * 0.82);
+        if (cfg.bass[i]) this._blip(st, cfg.bass[i], cfg.bassGain, cfg.stepDur * 1.5);
+        if (cfg.hihat && cfg.hihat[i]) this._tick(st, cfg.hihatGain);
+      }
+      this._musicLastRun = Date.now();
+      var totalDur = steps * cfg.stepDur;
+    } catch (e) {
+      var totalDur = 1; // se algo der errado numa rodada, tenta de novo logo em seguida em vez de morrer
+    } finally {
+      // sempre re-agenda, mesmo se essa rodada falhou - o loop nunca "morre" de vez
+      this.musicTimeout = setTimeout(() => this._scheduleMusicLoop(), Math.max(200, totalDur * 1000));
     }
-    const totalDur = steps * cfg.stepDur;
-    this.musicTimeout = setTimeout(() => this._scheduleMusicLoop(), totalDur * 1000);
+  }
+  // Chamado periodicamente pelo jogo: se a musica devia estar tocando mas nao roda ha tempo
+  // demais (o encadeamento de timers pode ser interrompido em alguns navegadores mobile),
+  // reinicia o loop do zero.
+  watchdog() {
+    if (!this.ready || !this.musicStarted || !this.musicGain) return;
+    const last = this._musicLastRun || 0;
+    if (Date.now() - last > 6000) {
+      this._musicLastRun = Date.now();
+      this._scheduleMusicLoop();
+    }
   }
   _blip(t0, freq, gainAmt, dur) {
     // nota curta de onda quadrada - o timbre classico de chiptune 8/16-bit
@@ -1202,6 +1224,7 @@ class Game {
     if (frameCount % 30 === 0 && this.audio.ctx) {
       if (this.audio.ctx.state === 'suspended') this.audio.resume();
       if (!this.audio.musicStarted && this.audio.ctx.state === 'running') this.audio.startMusic();
+      this.audio.watchdog();
     }
 
     const frozen = (this.state === STATE.GAMEOVER || this.state === STATE.COUNTDOWN);
@@ -1313,11 +1336,32 @@ class Game {
     }
 
     this._renderMuteToggle(pg);
+    this._renderAudioDebug(pg);
     this._renderFullscreenToggle(pg);
 
     pg.pop();
 
     image(pg, 0, 0);
+  }
+
+  _renderAudioDebug(pg) {
+    const a = this.audio;
+    const ctxState = a.ctx ? a.ctx.state : 'sem-contexto';
+    const line1 = `AUDIO ready=${a.ready} ctx=${ctxState} music=${a.musicStarted} muted=${a.musicMuted}`;
+    const line2 = a.lastError ? `erro: ${a.lastError}` : '';
+    pg.push();
+    pg.noStroke();
+    pg.fill(0, 0, 0, 180);
+    pg.rect(0, 0, GAME_W, line2 ? 30 : 16);
+    pg.fill(140, 255, 170);
+    pg.textAlign(LEFT, TOP);
+    pg.textSize(9);
+    pg.text(line1, 4, 2);
+    if (line2) {
+      pg.fill(255, 140, 140);
+      pg.text(line2, 4, 15);
+    }
+    pg.pop();
   }
 
   _renderMuteToggle(pg) {
@@ -1372,6 +1416,9 @@ class Game {
   isFullscreenClick(x, y) {
     const cx = 26, cy = GAME_H - 22, r = 16;
     return (x - cx) * (x - cx) + (y - cy) * (y - cy) <= r * r;
+  }
+  isMenuFullscreenClick(x, y) {
+    return this.state === STATE.MENU && x >= GAME_W / 2 - 72 && x <= GAME_W / 2 + 72 && y >= 196 && y <= 224;
   }
   toggleFullscreen() {
     try {
@@ -1431,6 +1478,18 @@ class Game {
     pg.textSize(11);
     pg.text('Produced by Costa Games', GAME_W/2, 170);
     pg.drawingContext.shadowBlur = 0;
+
+    // botao de tela cheia, bem visivel (util principalmente no desktop)
+    pg.stroke(255, 255, 255, 100);
+    pg.strokeWeight(1);
+    pg.fill(255, 255, 255, 22);
+    pg.rect(GAME_W/2 - 72, 196, 144, 28, 8);
+    pg.noStroke();
+    pg.fill(255, 255, 255, 225);
+    pg.textSize(11);
+    pg.textStyle(BOLD);
+    pg.text('⛶  TELA CHEIA', GAME_W/2, 210);
+    pg.textStyle(NORMAL);
 
     const blink = (Math.sin(frameCount * 0.06) + 1) / 2;
     pg.drawingContext.shadowBlur = 8;
@@ -1655,19 +1714,54 @@ class Game {
 let game;
 let nicknameInput;
 let canvasElt;
+let needsRotate = false; // true quando esta no celular em pe (o jogo e horizontal)
 
-// Ajusta o tamanho visual do canvas: no celular, preenche a tela inteira (cobrindo de ponta
-// a ponta, cortando um pouco das bordas se precisar); no desktop, cabe na janela sem exagero.
+// Ajusta o tamanho visual do canvas: no celular deitado, preenche a tela inteira; no celular
+// em pe, pede para girar (o jogo e horizontal); no desktop, cabe na janela sem exagero.
 function fitCanvasToScreen() {
   if (!canvasElt) return;
-  const vw = window.innerWidth;
-  const vh = window.innerHeight;
-  const isMobile = Math.min(vw, vh) < 560; // funciona em retrato e paisagem
-  const scale = isMobile
-    ? Math.max(vw / GAME_W, vh / GAME_H)
-    : Math.min(vw / GAME_W, vh / GAME_H, 1.3);
+  const vv = window.visualViewport;
+  const vw = vv ? vv.width : window.innerWidth;
+  const vh = vv ? vv.height : window.innerHeight;
+  const isMobile = Math.min(vw, vh) < 560;
+  const isPortrait = vh > vw;
+  needsRotate = isMobile && isPortrait;
+
+  let scale;
+  if (needsRotate) {
+    scale = Math.min(vw / GAME_W, vh / GAME_H); // so precisa caber, tela vai mostrar aviso de girar
+  } else if (isMobile) {
+    scale = Math.max(vw / GAME_W, vh / GAME_H); // celular deitado: cobre a tela toda, ponta a ponta
+  } else {
+    scale = Math.min(vw / GAME_W, vh / GAME_H, 1.3); // desktop: cabe na janela, sem ficar gigante
+  }
   canvasElt.style.width = (GAME_W * scale) + 'px';
   canvasElt.style.height = (GAME_H * scale) + 'px';
+}
+
+function drawRotatePrompt() {
+  push();
+  noStroke();
+  fill(4, 5, 9, 240);
+  rect(0, 0, width, height);
+  push();
+  translate(width / 2, height / 2 - 46);
+  rotate(Math.sin(frameCount * 0.05) * 0.35);
+  noFill();
+  stroke(255, 190, 100);
+  strokeWeight(3);
+  rect(-16, -24, 32, 48, 5);
+  pop();
+  fill(255);
+  textAlign(CENTER, CENTER);
+  textStyle(BOLD);
+  textSize(16);
+  text('Gire seu aparelho', width / 2, height / 2 + 18);
+  textStyle(NORMAL);
+  fill(210, 214, 222, 210);
+  textSize(12);
+  text('O Lumi voa melhor na horizontal', width / 2, height / 2 + 40);
+  pop();
 }
 
 function setup() {
@@ -1679,6 +1773,9 @@ function setup() {
   fitCanvasToScreen();
   window.addEventListener('resize', fitCanvasToScreen);
   window.addEventListener('orientationchange', () => setTimeout(fitCanvasToScreen, 200));
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', fitCanvasToScreen);
+  }
 
   removeFlatBackground(imgDragon);
   removeFlatBackground(imgObs.gear);
@@ -1732,19 +1829,24 @@ function setup() {
   ['touchend', 'touchstart', 'mousedown', 'click', 'pointerdown'].forEach((evt) => {
     document.addEventListener(evt, tryUnlockAudio, { passive: true });
   });
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) tryUnlockAudio();
+  });
 }
 
 function draw() {
   game.update();
   game.render();
+  if (needsRotate) drawRotatePrompt();
 }
 
 function mousePressed() {
+  if (needsRotate) return false;
   if (game.isMuteClick(mouseX, mouseY)) {
     game.toggleMute();
     return false;
   }
-  if (game.isFullscreenClick(mouseX, mouseY)) {
+  if (game.isFullscreenClick(mouseX, mouseY) || game.isMenuFullscreenClick(mouseX, mouseY)) {
     game.toggleFullscreen();
     return false;
   }
@@ -1776,13 +1878,14 @@ function keyPressed() {
 }
 
 function touchStarted() {
+  if (needsRotate) return false;
   if (touches.length === 0) return;
   const tx = touches[0].x, ty = touches[0].y;
   if (game.isMuteClick(tx, ty)) {
     game.toggleMute();
     return false;
   }
-  if (game.isFullscreenClick(tx, ty)) {
+  if (game.isFullscreenClick(tx, ty) || game.isMenuFullscreenClick(tx, ty)) {
     game.toggleFullscreen();
     return false;
   }
