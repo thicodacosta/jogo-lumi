@@ -163,7 +163,7 @@ const GRAVITY = 0.45;
 const JUMP_FORCE = -7.5;
 const MAX_FALL_SPEED = 8.5;
 
-const STATE = { MENU: 'menu', REGISTER: 'register', PLAYING: 'playing', GAMEOVER: 'gameover' };
+const STATE = { MENU: 'menu', REGISTER: 'register', COUNTDOWN: 'countdown', PLAYING: 'playing', GAMEOVER: 'gameover' };
 
 // Ciclo de dificuldade dos obstaculos: cada faixa usa uma imagem/largura/vao proprios,
 // dos mais faceis e largos aos mais dificeis e apertados. Ao passar do ultimo volta ao
@@ -290,6 +290,18 @@ class AudioManager {
     g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.75);
     osc.connect(g).connect(this.ctx.destination);
     osc.start(t0); osc.stop(t0 + 0.8);
+  }
+  countdownBeep(freq, dur, gainAmt) {
+    if (!this.ready) return;
+    const t0 = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    osc.type = 'square';
+    osc.frequency.value = freq;
+    const g = this._envGain(0.0001, t0);
+    g.gain.exponentialRampToValueAtTime(gainAmt, t0 + 0.015);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    osc.connect(g).connect(this.ctx.destination);
+    osc.start(t0); osc.stop(t0 + dur + 0.05);
   }
   evolve() {
     if (!this.ready) return;
@@ -952,6 +964,8 @@ class Game {
     this.themeFlashTimer = 0;
     this.themeName = BG_THEMES[0].name;
     this.shareToastTimer = 0;
+    this.countdownTimer = 0;
+    this.countdownStepPlayed = -1;
 
     this.buffer = createGraphics(GAME_W, GAME_H);
     this.buffer.pixelDensity(1);
@@ -1063,7 +1077,9 @@ class Game {
   }
 
   _startGame() {
-    this.state = STATE.PLAYING;
+    this.state = STATE.COUNTDOWN;
+    this.countdownTimer = 0;
+    this.countdownStepPlayed = -1;
     this.obstaclesPassed = 0;
     this.distance = 0;
     this.dragon.reset();
@@ -1188,7 +1204,7 @@ class Game {
       if (!this.audio.musicStarted && this.audio.ctx.state === 'running') this.audio.startMusic();
     }
 
-    const frozen = (this.state === STATE.GAMEOVER);
+    const frozen = (this.state === STATE.GAMEOVER || this.state === STATE.COUNTDOWN);
     this.bg.update(frozen);
     this.ps.update();
 
@@ -1212,6 +1228,19 @@ class Game {
     } else if (this.state === STATE.REGISTER) {
       this.dragon.updateMenu();
       this._positionNicknameInput();
+    } else if (this.state === STATE.COUNTDOWN) {
+      this.dragon.updateMenu();
+      this.countdownTimer++;
+      const stepFrames = 55;
+      const idx = Math.floor(this.countdownTimer / stepFrames);
+      if (idx !== this.countdownStepPlayed && idx < 4) {
+        this.countdownStepPlayed = idx;
+        const freqs = [523.25, 587.33, 659.25, 880.00];
+        this.audio.countdownBeep(freqs[idx], idx < 3 ? 0.16 : 0.32, idx < 3 ? 0.15 : 0.2);
+      }
+      if (this.countdownTimer >= stepFrames * 4) {
+        this.state = STATE.PLAYING;
+      }
     } else if (this.state === STATE.PLAYING) {
       this.dragon.update(this.obstaclesPassed);
       this.obstacles.update(this.obstaclesPassed, this.dragon.x, () => this._onScore(), false);
@@ -1273,6 +1302,7 @@ class Game {
 
     if (this.state === STATE.MENU) this._renderMenu(pg);
     if (this.state === STATE.REGISTER) this._renderRegister(pg);
+    if (this.state === STATE.COUNTDOWN) this._renderCountdown(pg);
     if (this.state === STATE.GAMEOVER) this._renderGameOver(pg);
     if (this.state === STATE.PLAYING && this.themeFlashTimer > 0) {
       this._renderThemeBanner(pg);
@@ -1293,7 +1323,16 @@ class Game {
   _renderMuteToggle(pg) {
     const cx = GAME_W - 26, cy = GAME_H - 22, r = 14;
     const muted = this.audio.musicMuted;
+    const needsUnlock = !this.audio.ctx || this.audio.ctx.state !== 'running';
     pg.push();
+    if (needsUnlock) {
+      // aro pulsando chamando atencao para tocar aqui e ativar o som
+      const pulse = (Math.sin(frameCount * 0.1) + 1) / 2;
+      pg.noFill();
+      pg.stroke(255, 210, 120, 120 + pulse * 100);
+      pg.strokeWeight(2);
+      pg.ellipse(cx, cy, r * 2 + 6 + pulse * 6, r * 2 + 6 + pulse * 6);
+    }
     pg.noStroke();
     pg.fill(8, 12, 16, 170);
     pg.stroke(255, 255, 255, 60);
@@ -1399,6 +1438,36 @@ class Game {
     pg.fill(255, 255, 255, 150 + blink * 100);
     pg.textSize(15);
     pg.text('Clique ou pressione Espaco para comecar', GAME_W/2, GAME_H - 46);
+    pg.drawingContext.shadowBlur = 0;
+    pg.pop();
+  }
+
+  _renderCountdown(pg) {
+    const stepFrames = 55;
+    const idx = Math.floor(this.countdownTimer / stepFrames);
+    const labels = ['3', '2', '1', 'JA!'];
+    if (idx < 0 || idx >= labels.length) return;
+
+    // leve escurecida no fundo para destacar o numero, sem esconder o cenario
+    pg.push();
+    pg.noStroke();
+    pg.fill(0, 0, 0, 60);
+    pg.rect(0, 0, GAME_W, GAME_H);
+
+    const localT = (this.countdownTimer % stepFrames) / stepFrames;
+    const scalePop = 1 + (1 - Math.min(1, localT * 3)) * 0.7; // "pop" grande no inicio de cada numero, acomoda rapido
+    const alpha = localT > 0.82 ? clamp((1 - localT) / 0.18, 0, 1) * 255 : 255;
+
+    pg.textAlign(CENTER, CENTER);
+    pg.translate(GAME_W / 2, GAME_H / 2);
+    pg.scale(scalePop);
+    pg.drawingContext.shadowBlur = 26;
+    pg.drawingContext.shadowColor = `rgba(255,180,80,${alpha / 255})`;
+    pg.fill(255, 255, 255, alpha);
+    pg.textStyle(BOLD);
+    pg.textSize(labels[idx] === 'JA!' ? 48 : 72);
+    pg.text(labels[idx], 0, 0);
+    pg.textStyle(NORMAL);
     pg.drawingContext.shadowBlur = 0;
     pg.pop();
   }
@@ -1593,7 +1662,7 @@ function fitCanvasToScreen() {
   if (!canvasElt) return;
   const vw = window.innerWidth;
   const vh = window.innerHeight;
-  const isMobile = vw < 900 || vh < 500;
+  const isMobile = Math.min(vw, vh) < 560; // funciona em retrato e paisagem
   const scale = isMobile
     ? Math.max(vw / GAME_W, vh / GAME_H)
     : Math.min(vw / GAME_W, vh / GAME_H, 1.3);
@@ -1646,6 +1715,23 @@ function setup() {
   nicknameInput.hide();
 
   game = new Game();
+
+  // "Destrava" o audio em QUALQUER tipo de toque/clique na pagina, nao so nos
+  // handlers do p5 - o Safari do iPhone as vezes exige um tipo especifico de
+  // gesto (touchend, nao touchstart) para liberar o AudioContext.
+  function tryUnlockAudio() {
+    if (!game) return;
+    game.audio.init();
+    game.audio.resume();
+    if (game.audio.ctx && !game.audio.musicStarted) {
+      game.audio.ctx.resume().then(() => {
+        if (!game.audio.musicStarted) game.audio.startMusic();
+      }).catch(() => {});
+    }
+  }
+  ['touchend', 'touchstart', 'mousedown', 'click', 'pointerdown'].forEach((evt) => {
+    document.addEventListener(evt, tryUnlockAudio, { passive: true });
+  });
 }
 
 function draw() {
