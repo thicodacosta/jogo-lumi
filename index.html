@@ -2,17 +2,29 @@
 <html lang="pt-BR">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Lumi">
+<meta name="theme-color" content="#05070a">
 <title>Lumi - Flying Dragon</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
 <style>
   html, body {
-    margin: 0; padding: 0; height: 100%; background: #05070a;
+    margin: 0; padding: 0; width: 100%; height: 100%; background: #05070a;
     display: flex; align-items: center; justify-content: center;
     font-family: 'Segoe UI', Tahoma, sans-serif; overflow: hidden;
+    position: fixed; inset: 0;
+    overscroll-behavior: none;
+    -webkit-user-select: none; user-select: none;
   }
   canvas {
     box-shadow: 0 0 60px rgba(0,0,0,0.9), 0 0 0 1px rgba(255,255,255,0.05);
-    border-radius: 4px;
+    touch-action: none;
+  }
+  @media (max-width: 900px), (max-height: 500px) {
+    canvas { box-shadow: none; border-radius: 0; }
   }
 </style>
 </head>
@@ -973,17 +985,34 @@ class Game {
     nicknameInput.elt.focus();
   }
 
+  _registerCardGeom() {
+    const cw = 300, ch = 268;
+    const cx = GAME_W / 2 - cw / 2;
+    const cy = GAME_H / 2 - ch / 2 - 4;
+    return { cw, ch, cx, cy };
+  }
+
   _positionNicknameInput() {
     if (!canvasElt) return;
     const rect = canvasElt.getBoundingClientRect();
-    nicknameInput.position(rect.left + GAME_W / 2 - 90, rect.top + 196);
+    const scale = rect.width / GAME_W;
+    const { cy } = this._registerCardGeom();
+    const left = rect.left + (GAME_W / 2 - 92) * scale;
+    const top = rect.top + (cy + 104) * scale;
+    nicknameInput.position(left, top);
+    nicknameInput.style('width', (164 * scale) + 'px');
+    nicknameInput.style('height', (30 * scale) + 'px');
+    nicknameInput.style('font-size', Math.max(11, 15 * scale) + 'px');
+    nicknameInput.style('padding', (4 * scale) + 'px ' + (10 * scale) + 'px');
   }
 
   isConfirmClick(x, y) {
-    return x >= GAME_W / 2 - 90 && x <= GAME_W / 2 + 90 && y >= 240 && y <= 270;
+    const { cy } = this._registerCardGeom();
+    return x >= GAME_W / 2 - 92 && x <= GAME_W / 2 + 92 && y >= cy + 158 && y <= cy + 194;
   }
   isSkipClick(x, y) {
-    return x >= GAME_W / 2 - 60 && x <= GAME_W / 2 + 60 && y >= 280 && y <= 300;
+    const { cy } = this._registerCardGeom();
+    return x >= GAME_W / 2 - 100 && x <= GAME_W / 2 + 100 && y >= cy + 222 && y <= cy + 242;
   }
   confirmNickname() {
     const val = (nicknameInput.value() || '').trim().slice(0, 14);
@@ -1254,6 +1283,7 @@ class Game {
     }
 
     this._renderMuteToggle(pg);
+    this._renderFullscreenToggle(pg);
 
     pg.pop();
 
@@ -1297,6 +1327,37 @@ class Game {
       pg.arc(3, 0, 16, 16, -0.7, 0.7);
       pg.noStroke();
     }
+    pg.pop();
+  }
+
+  isFullscreenClick(x, y) {
+    const cx = 26, cy = GAME_H - 22, r = 16;
+    return (x - cx) * (x - cx) + (y - cy) * (y - cy) <= r * r;
+  }
+  toggleFullscreen() {
+    try {
+      const fs = fullscreen();
+      fullscreen(!fs);
+    } catch (e) { /* Fullscreen API indisponivel neste navegador */ }
+  }
+  _renderFullscreenToggle(pg) {
+    const cx = 26, cy = GAME_H - 22, r = 14;
+    pg.push();
+    pg.noStroke();
+    pg.fill(8, 12, 16, 170);
+    pg.stroke(255, 255, 255, 60);
+    pg.strokeWeight(1);
+    pg.ellipse(cx, cy, r * 2, r * 2);
+    pg.noStroke();
+    pg.stroke(255, 255, 255, 220);
+    pg.strokeWeight(1.6);
+    pg.noFill();
+    // quatro cantinhos, icone classico de "expandir tela"
+    const s = 4.5, o = 3;
+    pg.line(cx - o - s, cy - o, cx - o, cy - o); pg.line(cx - o, cy - o - s, cx - o, cy - o);
+    pg.line(cx + o + s, cy - o, cx + o, cy - o); pg.line(cx + o, cy - o - s, cx + o, cy - o);
+    pg.line(cx - o - s, cy + o, cx - o, cy + o); pg.line(cx - o, cy + o + s, cx - o, cy + o);
+    pg.line(cx + o + s, cy + o, cx + o, cy + o); pg.line(cx + o, cy + o + s, cx + o, cy + o);
     pg.pop();
   }
 
@@ -1345,43 +1406,67 @@ class Game {
   _renderRegister(pg) {
     pg.push();
     pg.noStroke();
-    pg.fill(5, 6, 10, 190);
+    pg.fill(4, 5, 9, 205);
     pg.rect(0, 0, GAME_W, GAME_H);
+
+    // cartao central
+    const { cw, ch, cx, cy } = this._registerCardGeom();
+    pg.drawingContext.shadowBlur = 30;
+    pg.drawingContext.shadowColor = 'rgba(255,150,50,0.25)';
+    pg.fill(14, 17, 24, 235);
+    pg.stroke(255, 180, 110, 70);
+    pg.strokeWeight(1.2);
+    pg.rect(cx, cy, cw, ch, 16);
+    pg.drawingContext.shadowBlur = 0;
+    pg.noStroke();
 
     pg.textAlign(CENTER, CENTER);
     pg.fill(255);
-    pg.textSize(24);
+    pg.textSize(23);
     pg.textStyle(BOLD);
-    pg.drawingContext.shadowBlur = 12;
-    pg.drawingContext.shadowColor = 'rgba(255,150,50,0.6)';
-    pg.text('Bem-vindo(a)!', GAME_W/2, 130);
+    pg.drawingContext.shadowBlur = 10;
+    pg.drawingContext.shadowColor = 'rgba(255,150,50,0.55)';
+    pg.text('Bem-vindo(a)!', GAME_W/2, cy + 34);
     pg.drawingContext.shadowBlur = 0;
 
     pg.textStyle(NORMAL);
-    pg.fill(220, 225, 232, 220);
-    pg.textSize(13);
-    pg.text('Escolha um apelido para salvar seu recorde neste aparelho', GAME_W/2, 165);
+    pg.fill(200, 206, 216, 220);
+    pg.textSize(11.5);
+    pg.text('Escolha um apelido para salvar', GAME_W/2, cy + 58);
+    pg.text('seu recorde neste aparelho', GAME_W/2, cy + 72);
 
-    // caixa de fundo atras do input de texto real (posicionado via DOM)
-    pg.stroke(255, 255, 255, 90);
-    pg.strokeWeight(1.5);
-    pg.fill(20, 24, 30, 220);
-    pg.rect(GAME_W/2 - 92, 190, 184, 36, 8);
+    pg.fill(255, 190, 120, 200);
+    pg.textSize(9.5);
+    pg.textStyle(BOLD);
+    pg.text('APELIDO', GAME_W/2, cy + 94);
+    pg.textStyle(NORMAL);
+
+    // caixa de fundo atras do input de texto real (posicionado via DOM logo abaixo)
+    pg.stroke(255, 180, 110, 130);
+    pg.strokeWeight(1.4);
+    pg.fill(9, 11, 16, 255);
+    pg.rect(GAME_W/2 - 92, cy + 104, 184, 38, 9);
     pg.noStroke();
 
     // botao confirmar
-    pg.fill(255, 175, 80, 230);
-    pg.rect(GAME_W/2 - 90, 240, 180, 30, 8);
-    pg.fill(20, 16, 10);
-    pg.textSize(14);
+    pg.fill(255, 178, 84, 235);
+    pg.rect(GAME_W/2 - 92, cy + 158, 184, 36, 9);
+    pg.fill(25, 18, 8);
+    pg.textSize(13.5);
     pg.textStyle(BOLD);
-    pg.text('CONFIRMAR', GAME_W/2, 255);
+    pg.text('CONFIRMAR', GAME_W/2, cy + 176);
     pg.textStyle(NORMAL);
 
+    // separador
+    pg.stroke(255, 255, 255, 30);
+    pg.strokeWeight(1);
+    pg.line(cx + 30, cy + 210, cx + cw - 30, cy + 210);
+    pg.noStroke();
+
     // pular (usa nome de convidado aleatorio)
-    pg.fill(200, 205, 215, 190);
-    pg.textSize(12);
-    pg.text('pular e usar nome de convidado', GAME_W/2, 290);
+    pg.fill(180, 186, 196, 200);
+    pg.textSize(11);
+    pg.text('pular e usar nome de convidado', GAME_W/2, cy + 232);
 
     pg.pop();
   }
@@ -1502,11 +1587,29 @@ let game;
 let nicknameInput;
 let canvasElt;
 
+// Ajusta o tamanho visual do canvas: no celular, preenche a tela inteira (cobrindo de ponta
+// a ponta, cortando um pouco das bordas se precisar); no desktop, cabe na janela sem exagero.
+function fitCanvasToScreen() {
+  if (!canvasElt) return;
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const isMobile = vw < 900 || vh < 500;
+  const scale = isMobile
+    ? Math.max(vw / GAME_W, vh / GAME_H)
+    : Math.min(vw / GAME_W, vh / GAME_H, 1.3);
+  canvasElt.style.width = (GAME_W * scale) + 'px';
+  canvasElt.style.height = (GAME_H * scale) + 'px';
+}
+
 function setup() {
   const cnv = createCanvas(GAME_W, GAME_H);
   cnv.parent(document.body);
   canvasElt = cnv.elt;
   frameRate(60);
+
+  fitCanvasToScreen();
+  window.addEventListener('resize', fitCanvasToScreen);
+  window.addEventListener('orientationchange', () => setTimeout(fitCanvasToScreen, 200));
 
   removeFlatBackground(imgDragon);
   removeFlatBackground(imgObs.gear);
@@ -1523,15 +1626,23 @@ function setup() {
   nicknameInput = createInput('');
   nicknameInput.attribute('maxlength', '14');
   nicknameInput.attribute('placeholder', 'Seu apelido');
+  nicknameInput.attribute('autocapitalize', 'words');
+  nicknameInput.attribute('autocomplete', 'off');
+  nicknameInput.attribute('autocorrect', 'off');
+  nicknameInput.attribute('spellcheck', 'false');
+  nicknameInput.attribute('enterkeyhint', 'done');
   nicknameInput.size(164);
   nicknameInput.style('font-size', '15px');
-  nicknameInput.style('padding', '6px 10px');
+  nicknameInput.style('padding', '4px 10px');
   nicknameInput.style('border-radius', '6px');
   nicknameInput.style('border', 'none');
   nicknameInput.style('outline', 'none');
-  nicknameInput.style('background', '#12161d');
+  nicknameInput.style('background', '#090b10');
   nicknameInput.style('color', '#ffffff');
+  nicknameInput.style('text-align', 'center');
   nicknameInput.style('font-family', 'Segoe UI, sans-serif');
+  nicknameInput.style('box-sizing', 'border-box');
+  nicknameInput.style('z-index', '10');
   nicknameInput.hide();
 
   game = new Game();
@@ -1545,6 +1656,10 @@ function draw() {
 function mousePressed() {
   if (game.isMuteClick(mouseX, mouseY)) {
     game.toggleMute();
+    return false;
+  }
+  if (game.isFullscreenClick(mouseX, mouseY)) {
+    game.toggleFullscreen();
     return false;
   }
   if (game.state === STATE.REGISTER) {
@@ -1579,6 +1694,10 @@ function touchStarted() {
   const tx = touches[0].x, ty = touches[0].y;
   if (game.isMuteClick(tx, ty)) {
     game.toggleMute();
+    return false;
+  }
+  if (game.isFullscreenClick(tx, ty)) {
+    game.toggleFullscreen();
     return false;
   }
   if (game.state === STATE.REGISTER) {
