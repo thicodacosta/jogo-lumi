@@ -34,13 +34,16 @@
    LUMI - jogo inspirado em Badland / Flappy Bird
    Versao com sprites (imagens externas) para personagem, fundo e obstaculos.
 
-   IMPORTANTE - ARQUIVOS DE IMAGEM NECESSARIOS (na MESMA pasta deste HTML):
+   IMPORTANTE - ARQUIVOS NECESSARIOS (na MESMA pasta deste HTML):
      Personagem: Draga_o.png
      Fundos:     Back1.jpg, Back2.jpg, Back3.avif, Back4.avif, Back5.jpg
      Obstaculos: Ob1.png, Ob2.png, Ob3.png, Ob4.png
+     Audio:      SomFundo.mp3 (trilha de fundo, toca em loop), SomCenario.mp3
+                 (troca de fase), Somgameover.mp3 (game over),
+                 SomPerdeVida.mp3 (perde uma vida), SomVida.mp3 (ganha uma vida)
 
-   Como as imagens sao carregadas via loadImage(), o navegador precisa servir
-   este arquivo por HTTP (nao funciona abrindo o HTML direto com duplo clique
+   Como as imagens/audios sao carregados via loadImage()/Audio(), o navegador precisa
+   servir este arquivo por HTTP (nao funciona abrindo o HTML direto com duplo clique
    em alguns navegadores, por causa de restricao de CORS para arquivos locais).
    Rode um servidor local simples na pasta, por exemplo:
      python3 -m http.server 8000
@@ -211,11 +214,15 @@ class AudioManager {
     this.ctx = null;
     this.noiseBuffer = null;
     this.ready = false;
-    this.musicStarted = false;
     this.musicMuted = false;
-    this.musicGain = null;
-    this.musicTimeout = null;
-    this.musicLevel = 0;
+
+    // Arquivos de audio reais (mp3) - muito mais confiaveis no mobile que sintese via Web Audio
+    this.sndBackground = null;
+    this.sndSceneChange = null;
+    this.sndGameOver = null;
+    this.sndLoseLife = null;
+    this.sndGainLife = null;
+    this.bgStarted = false;
   }
   init() {
     if (this.ctx) return;
@@ -282,19 +289,6 @@ class AudioManager {
     src.connect(g).connect(this.ctx.destination);
     src.start(t0);
   }
-  gameOver() {
-    if (!this.ready) return;
-    const t0 = this.ctx.currentTime;
-    const osc = this.ctx.createOscillator();
-    const g = this._envGain(0.0001, t0);
-    osc.type = 'sawtooth';
-    osc.frequency.setValueAtTime(280, t0);
-    osc.frequency.exponentialRampToValueAtTime(60, t0 + 0.7);
-    g.gain.exponentialRampToValueAtTime(0.15, t0 + 0.05);
-    g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.75);
-    osc.connect(g).connect(this.ctx.destination);
-    osc.start(t0); osc.stop(t0 + 0.8);
-  }
   countdownBeep(freq, dur, gainAmt) {
     if (!this.ready) return;
     const t0 = this.ctx.currentTime;
@@ -322,132 +316,51 @@ class AudioManager {
       osc.start(t0 + i * 0.08); osc.stop(t0 + i * 0.08 + 0.3);
     });
   }
-  life() {
-    if (!this.ready) return;
-    const t0 = this.ctx.currentTime;
-    [520, 780].forEach((f, i) => {
-      const osc = this.ctx.createOscillator();
-      const g = this._envGain(0.0001, t0);
-      osc.type = 'square';
-      osc.frequency.setValueAtTime(f, t0 + i * 0.1);
-      g.gain.setValueAtTime(0.0001, t0 + i * 0.1);
-      g.gain.exponentialRampToValueAtTime(0.12, t0 + i * 0.1 + 0.02);
-      g.gain.exponentialRampToValueAtTime(0.0001, t0 + i * 0.1 + 0.3);
-      osc.connect(g).connect(this.ctx.destination);
-      osc.start(t0 + i * 0.1); osc.stop(t0 + i * 0.1 + 0.32);
-    });
-  }
 
-  /* --------- Musica de fundo estilo chiptune 16-bit (gerada via Web Audio, sem arquivos externos) ---------
-     Melodia e baixo saltitante originais, com onda quadrada (som classico de plataforma 8/16-bit).
-     3 niveis de intensidade, um para cada tema de cenario (claro -> escuro): tempo e harmonia
-     vao ficando mais rapidos e tensos conforme o cenario escurece. */
-  startMusic() {
-    if (!this.ready || this.musicStarted) return;
-    this.musicStarted = true;
-    this.musicGain = this.ctx.createGain();
-    this.musicGain.gain.value = this.musicMuted ? 0 : 0.6;
-    this.musicGain.connect(this.ctx.destination);
-    this._scheduleMusicLoop();
+  /* --------- Arquivos de audio reais (mp3 enviados pelo usuario) --------- */
+  loadFiles() {
+    if (this.sndBackground) return; // ja carregado
+    this.sndBackground = new Audio('SomFundo.mp3');
+    this.sndBackground.loop = true; // looping nativo do navegador - continua para sempre sozinho
+    this.sndBackground.volume = 0.45;
+    this.sndBackground.muted = this.musicMuted;
+
+    this.sndSceneChange = new Audio('SomCenario.mp3');
+    this.sndSceneChange.volume = 0.75;
+
+    this.sndGameOver = new Audio('Somgameover.mp3');
+    this.sndGameOver.volume = 0.85;
+
+    this.sndLoseLife = new Audio('SomPerdeVida.mp3');
+    this.sndLoseLife.volume = 0.85;
+
+    this.sndGainLife = new Audio('SomVida.mp3');
+    this.sndGainLife.volume = 0.85;
   }
+  startBackgroundMusic() {
+    if (!this.sndBackground) return;
+    this.sndBackground.muted = this.musicMuted;
+    const p = this.sndBackground.play();
+    if (p && p.catch) p.catch(() => {});
+    this.bgStarted = true;
+  }
+  _playOneShot(snd) {
+    if (!snd || this.musicMuted) return;
+    try {
+      snd.currentTime = 0;
+      const p = snd.play();
+      if (p && p.catch) p.catch(() => {});
+    } catch (e) { /* ignora - alguns navegadores bloqueiam se ainda nao houve gesto */ }
+  }
+  playSceneChange() { this._playOneShot(this.sndSceneChange); }
+  playGameOver() { this._playOneShot(this.sndGameOver); }
+  playLoseLife() { this._playOneShot(this.sndLoseLife); }
+  playGainLife() { this._playOneShot(this.sndGainLife); }
+
   toggleMusicMute() {
     this.musicMuted = !this.musicMuted;
-    if (this.musicGain) {
-      const target = this.musicMuted ? 0 : 0.6;
-      this.musicGain.gain.linearRampToValueAtTime(target, this.ctx.currentTime + 0.3);
-    }
+    if (this.sndBackground) this.sndBackground.muted = this.musicMuted;
     return this.musicMuted;
-  }
-  setMusicLevel(level) {
-    this.musicLevel = clamp(level, 0, this._musicLevels().length - 1);
-  }
-  _musicLevels() {
-    const N = { C4:261.63,D4:293.66,E4:329.63,F4:349.23,G4:392.00,A4:440.00,B4:493.88,
-                C5:523.25,D5:587.33,E5:659.25,F5:698.46,G5:783.99,A5:880.00,B5:987.77,
-                Ab4:415.30,Bb4:466.16,Db5:554.37,
-                C2:65.41,D2:73.42,E2:82.41,G2:98.00,A2:110.00,B2:123.47,C3:130.81,Db3:138.59 };
-    return [
-      { // Nivel 0 - Amanhecer: melodia saltitante e leve, tempo tranquilo (estilo overworld)
-        stepDur: 0.16,
-        melody: [N.C5,0,N.E5,N.G5,0,N.E5,N.D5,0,  N.C5,0,N.D5,N.E5,0,N.G5,N.A5,0],
-        bass:   [N.C3,0,0,0,  N.G2,0,0,0,          N.C3,0,0,0,  N.G2,0,0,0],
-        hihat:  null,
-        leadGain: 0.10, bassGain: 0.085, hihatGain: 0
-      },
-      { // Nivel 1 - Entardecer: mais notas, tempo mais rapido, harmonia menor
-        stepDur: 0.135,
-        melody: [N.A4,0,N.C5,N.E5,0,N.C5,N.B4,0,   N.A4,N.C5,0,N.E5,N.D5,0,N.C5,N.B4],
-        bass:   [N.A2,0,0,N.E2,  0,N.A2,0,N.E2,     N.A2,0,0,N.E2,  0,N.A2,0,N.E2],
-        hihat:  [0,0,1,0, 0,0,1,0, 0,0,1,0, 0,0,1,0],
-        leadGain: 0.105, bassGain: 0.095, hihatGain: 0.03
-      },
-      { // Nivel 2 - Noite Sombria: rapido, cromatico e tenso (trítono no baixo)
-        stepDur: 0.112,
-        melody: [N.G4,0,N.Bb4,N.Db5,0,N.Bb4,N.Ab4,0, N.G4,N.Bb4,0,N.Db5,N.Db5,0,N.Bb4,N.Ab4],
-        bass:   [N.G2,0,0,N.G2,  N.Db3,0,N.G2,0,      N.G2,0,0,N.G2,  N.Db3,0,N.G2,0],
-        hihat:  [1,0,1,0, 1,0,1,0, 1,0,1,0, 1,0,1,0],
-        leadGain: 0.115, bassGain: 0.105, hihatGain: 0.045
-      }
-    ];
-  }
-  _scheduleMusicLoop() {
-    if (!this.ready || !this.musicStarted) return;
-    try {
-      const cfg = this._musicLevels()[this.musicLevel || 0];
-      const t0 = this.ctx.currentTime;
-      const steps = cfg.melody.length;
-      for (let i = 0; i < steps; i++) {
-        const st = t0 + i * cfg.stepDur;
-        if (cfg.melody[i]) this._blip(st, cfg.melody[i], cfg.leadGain, cfg.stepDur * 0.82);
-        if (cfg.bass[i]) this._blip(st, cfg.bass[i], cfg.bassGain, cfg.stepDur * 1.5);
-        if (cfg.hihat && cfg.hihat[i]) this._tick(st, cfg.hihatGain);
-      }
-      this._musicLastRun = Date.now();
-      var totalDur = steps * cfg.stepDur;
-    } catch (e) {
-      var totalDur = 1; // se algo der errado numa rodada, tenta de novo logo em seguida em vez de morrer
-    } finally {
-      // sempre re-agenda, mesmo se essa rodada falhou - o loop nunca "morre" de vez
-      this.musicTimeout = setTimeout(() => this._scheduleMusicLoop(), Math.max(200, totalDur * 1000));
-    }
-  }
-  // Chamado periodicamente pelo jogo: se a musica devia estar tocando mas nao roda ha tempo
-  // demais (o encadeamento de timers pode ser interrompido em alguns navegadores mobile),
-  // reinicia o loop do zero.
-  watchdog() {
-    if (!this.ready || !this.musicStarted || !this.musicGain) return;
-    const last = this._musicLastRun || 0;
-    if (Date.now() - last > 6000) {
-      this._musicLastRun = Date.now();
-      this._scheduleMusicLoop();
-    }
-  }
-  _blip(t0, freq, gainAmt, dur) {
-    // nota curta de onda quadrada - o timbre classico de chiptune 8/16-bit
-    const osc = this.ctx.createOscillator();
-    osc.type = 'square';
-    osc.frequency.value = freq;
-    const g = this.ctx.createGain();
-    g.gain.setValueAtTime(0.0001, t0);
-    g.gain.exponentialRampToValueAtTime(gainAmt, t0 + 0.008);
-    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
-    osc.connect(g).connect(this.musicGain);
-    osc.start(t0);
-    osc.stop(t0 + dur + 0.02);
-  }
-  _tick(t0, gainAmt) {
-    if (!this.noiseBuffer) return;
-    const src = this.ctx.createBufferSource();
-    src.buffer = this.noiseBuffer;
-    const filt = this.ctx.createBiquadFilter();
-    filt.type = 'highpass';
-    filt.frequency.value = 6500;
-    const g = this.ctx.createGain();
-    g.gain.setValueAtTime(gainAmt, t0);
-    g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.05);
-    src.connect(filt).connect(g).connect(this.musicGain);
-    src.start(t0);
-    src.stop(t0 + 0.06);
   }
 }
 
@@ -957,6 +870,7 @@ class HUD {
 class Game {
   constructor() {
     this.audio = new AudioManager();
+    this.audio.loadFiles();
     this.ps = new ParticleSystem(180);
     this.bg = new Background();
     this.dragon = new Dragon(this.ps, this.audio, (stage) => this._onEvolve(stage));
@@ -1000,7 +914,7 @@ class Game {
   handleInput() {
     this.audio.init();
     this.audio.resume();
-    if (!this.audio.musicStarted) this.audio.startMusic();
+    if (!this.audio.bgStarted) this.audio.startBackgroundMusic();
     if (this.state === STATE.MENU) {
       if (this.nickname) {
         this._startGame();
@@ -1094,7 +1008,7 @@ class Game {
   toggleMute() {
     this.audio.init();
     this.audio.resume();
-    if (!this.audio.musicStarted) this.audio.startMusic();
+    if (!this.audio.bgStarted) this.audio.startBackgroundMusic();
     this.audio.toggleMusicMute();
   }
 
@@ -1120,7 +1034,6 @@ class Game {
     this.bg.setTheme(0);
     this.bg.blend = 1;
     this.themeName = BG_THEMES[0].name;
-    this.audio.setMusicLevel(0);
     this.shareToastTimer = 0;
   }
 
@@ -1164,8 +1077,7 @@ class Game {
     this.bg.setTheme(nextIndex);
     this.themeName = BG_THEMES[nextIndex].name;
     this.themeFlashTimer = 130;
-    this.audio.evolve();
-    this.audio.setMusicLevel(nextIndex);
+    this.audio.playSceneChange();
     for (let i = 0; i < 20; i++) {
       this.ps.emit('glow', this.dragon.x, this.dragon.y, {
         vx: rand(-1.5, 1.5), vy: rand(-1.5, 1.5), maxLife: 70, size: rand(3, 7),
@@ -1178,7 +1090,7 @@ class Game {
     if (this.lives >= 3) return; // maximo de 3 vidas - nao acumula alem disso
     this.lives++;
     this.lifeFlashTimer = 90;
-    this.audio.life();
+    this.audio.playGainLife();
     for (let i = 0; i < 12; i++) {
       this.ps.emit('glow', this.dragon.x, this.dragon.y, {
         vx: rand(-1, 1), vy: rand(-1.6, -0.2), maxLife: 55, size: rand(3, 6),
@@ -1193,7 +1105,7 @@ class Game {
       this.lives--;
       this.invulnTimer = 100;
       this.shakeTimer = 300; // tela treme por 5 segundos (60fps) e depois volta ao normal
-      this.audio.hit();
+      this.audio.playLoseLife();
       this.dragon.vy = JUMP_FORCE * 0.55; // pequeno impulso para escapar do obstaculo
       const r = this.dragon.getHitCircle().r;
       this.dragon.y = clamp(this.dragon.y, r + 6, GAME_H - r - 6);
@@ -1215,7 +1127,7 @@ class Game {
     this.shakeTimer = 300; // tela treme por 5 segundos e depois volta ao normal
     this.zoom = 1.18;
     this.deathTimer = 0;
-    this.audio.gameOver();
+    this.audio.playGameOver();
   }
 
   update() {
@@ -1223,8 +1135,7 @@ class Game {
     // "destravado" o AudioContext (acontece em alguns embeds restritivos, como iframes)
     if (frameCount % 30 === 0 && this.audio.ctx) {
       if (this.audio.ctx.state === 'suspended') this.audio.resume();
-      if (!this.audio.musicStarted && this.audio.ctx.state === 'running') this.audio.startMusic();
-      this.audio.watchdog();
+      if (!this.audio.bgStarted) this.audio.startBackgroundMusic();
     }
 
     const frozen = (this.state === STATE.GAMEOVER || this.state === STATE.COUNTDOWN);
@@ -1336,7 +1247,6 @@ class Game {
     }
 
     this._renderMuteToggle(pg);
-    this._renderAudioDebug(pg);
     this._renderFullscreenToggle(pg);
 
     pg.pop();
@@ -1344,30 +1254,11 @@ class Game {
     image(pg, 0, 0);
   }
 
-  _renderAudioDebug(pg) {
-    const a = this.audio;
-    const ctxState = a.ctx ? a.ctx.state : 'sem-contexto';
-    const line1 = `AUDIO ready=${a.ready} ctx=${ctxState} music=${a.musicStarted} muted=${a.musicMuted}`;
-    const line2 = a.lastError ? `erro: ${a.lastError}` : '';
-    pg.push();
-    pg.noStroke();
-    pg.fill(0, 0, 0, 180);
-    pg.rect(0, 0, GAME_W, line2 ? 30 : 16);
-    pg.fill(140, 255, 170);
-    pg.textAlign(LEFT, TOP);
-    pg.textSize(9);
-    pg.text(line1, 4, 2);
-    if (line2) {
-      pg.fill(255, 140, 140);
-      pg.text(line2, 4, 15);
-    }
-    pg.pop();
-  }
-
   _renderMuteToggle(pg) {
     const cx = GAME_W - 26, cy = GAME_H - 22, r = 14;
     const muted = this.audio.musicMuted;
-    const needsUnlock = !this.audio.ctx || this.audio.ctx.state !== 'running';
+    const needsUnlock = (!this.audio.ctx || this.audio.ctx.state !== 'running') ||
+                         (this.audio.sndBackground && this.audio.sndBackground.paused && !this.audio.musicMuted);
     pg.push();
     if (needsUnlock) {
       // aro pulsando chamando atencao para tocar aqui e ativar o som
@@ -1820,11 +1711,7 @@ function setup() {
     if (!game) return;
     game.audio.init();
     game.audio.resume();
-    if (game.audio.ctx && !game.audio.musicStarted) {
-      game.audio.ctx.resume().then(() => {
-        if (!game.audio.musicStarted) game.audio.startMusic();
-      }).catch(() => {});
-    }
+    if (!game.audio.bgStarted) game.audio.startBackgroundMusic();
   }
   ['touchend', 'touchstart', 'mousedown', 'click', 'pointerdown'].forEach((evt) => {
     document.addEventListener(evt, tryUnlockAudio, { passive: true });
